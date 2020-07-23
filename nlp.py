@@ -1,19 +1,19 @@
-import numpy as np
+#import numpy as np
 import json
-import sys
+#import sys
 #from flair.embeddings import TokenEmbeddings, WordEmbeddings, StackedEmbeddings, PooledFlairEmbeddings
 from flair.models import SequenceTagger
 from flair.data import Sentence
 from segtok.segmenter import split_single
-from sklearn.metrics import f1_score
+#from sklearn.metrics import f1_score
 from pprint import pprint
-import spacy
-from spacy.gold import GoldParse
-from spacy.scorer import Scorer
+#import spacy
+#from spacy.gold import GoldParse
+#from spacy.scorer import Scorer
 import re
 #from spacy.lang.de import German
-import torch
-import flashtext
+#import torch
+#import flashtext
 import time
 #from transformers import AutoTokenizer, BertModel, AutoModelWithLMHead, \
 #   BertForTokenClassification, AutoModelForTokenClassification, AutoConfig
@@ -25,7 +25,7 @@ def load_model(name):
         return spacy.load("/content/drive/My Drive/Colab Notebooks/models/spacy")
         
     elif name == "flair":
-        return SequenceTagger.load('/content/drive/My Drive/Colab Notebooks/models/flair/de-ner-conll03-v0.4.pt')
+        return SequenceTagger.load('models/de-ner-conll03-v0.4.pt')
 
     return 1
 	
@@ -36,11 +36,31 @@ def split_sents(corpus):
     returns list of lists of Sentence objects
     '''
     corp = []
-    for doc in corpus:
-            sentences = [Sentence(sent, use_tokenizer = True) for sent in split_single(doc)]
-            corp.append(sentences)  
-    print(corp)
-    return corp
+    for doc in corpus['corpus']:
+        sentences = [Sentence(sent, use_tokenizer = True) for sent in split_single(doc['text'])]
+        corp.append(sentences)  
+    return corp[:5]
+
+def get_annotations(corpus, isPrediction):
+    annotations = []
+    if isPrediction:
+        for doc in corpus:
+            docAnnotations = []
+            for sentence in doc:
+                sentenceJson = sentence.to_dict('ner')
+                for entity in sentenceJson['entities']:
+                    docAnnotations.append((entity['labels'][0].value, entity['start_pos'], entity['end_pos']))
+            annotations.append(docAnnotations)
+        return annotations
+    else:
+        for doc in corpus:
+            docAnnotations = []
+            for entity in doc['annotations']:
+                docAnnotations.append((entity['label'], entity['start_offset'], entity['end_offset']))
+            annotations.append(docAnnotations)
+        return annotations
+
+
 
 def predict_corpus(corpus):
     '''
@@ -49,7 +69,7 @@ def predict_corpus(corpus):
     returns same format but with prediction values; also prints out avg time 
         spent predicting per document
     '''
-    model = load_model('flair') muss nicht jedes mal laden im jupyter
+    model = load_model('flair') 
     
     times = [] 
     predicted_corpus = []
@@ -86,7 +106,7 @@ def get_city(locString):
 
     
 
-def anonymize(corpus, sent = True):
+def anonymize(corpus):
     '''
     corpus (input): list of lists of sentences per doc to be anonymized.  
     sent (flag): (default) True = list entries are sentences; False = list
@@ -94,20 +114,29 @@ def anonymize(corpus, sent = True):
     returns list of anonymized documents
     '''
 
-    if not sent:
-        corpus = split_sents(corpus)
+    
+    corpus_text = split_sents(corpus)
+    corpus_annot = get_annotations([doc for doc in corpus['corpus']], 0) #start_offset in datei umbenennen
 
-    predicted_corpus = predict_corpus(corpus)
+    predicted_corpus = predict_corpus(corpus_text)
+
+    predicted_annot = get_annotations(predicted_corpus, 1)
+
+    pprint(predicted_annot)
+    pprint(corpus_annot)
+    exit()
     anonymized_docs = []
     startTime = time.time()
     for doc in predicted_corpus:
+               
+        
         entsWithLabel = []
-        entsFound = {'PER': 0, 'LOC': 0, 'ORG': 0}
         seperator = " "
         docString = seperator.join([sen.to_original_text() for sen in doc])
         for sentence in doc:
-            json = sentence.to_dict('ner')
-            for entity in json['entities']:
+            sentenceJson = sentence.to_dict('ner')
+            for entity in sentenceJson['entities']:
+                
                 label = entity['labels'][0].value
                 entsWithLabel.append((label, entity['text']))
         for entity in entsWithLabel:

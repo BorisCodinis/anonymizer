@@ -1,9 +1,6 @@
-#pip list 
-pip install -U spacy
-pip install -U numpy
-pip install -U pip 
-pip install flair
-#pip install transformers
-pip install faker
-pip install flashtext
-pip install OSMPythonTools
+spacy
+numpy
+flair
+faker
+flashtext
+OSMPythonTools
