@@ -1,5 +1,6 @@
 #import numpy as np
 import json
+from math import sqrt
 #import sys
 #from flair.embeddings import TokenEmbeddings, WordEmbeddings, StackedEmbeddings, PooledFlairEmbeddings
 from flair.models import SequenceTagger
@@ -20,6 +21,8 @@ import time
 from faker import Faker
 from OSMPythonTools.overpass import Overpass
 
+DOC_COUNT = 5
+
 def load_model(name):
     if name == "spacy":
         return spacy.load("/content/drive/My Drive/Colab Notebooks/models/spacy")
@@ -36,47 +39,31 @@ def split_sents(corpus):
     returns list of lists of Sentence objects
     '''
     corp = []
-    for doc in corpus['corpus']:
-        sentences = [Sentence(sent, use_tokenizer = False) for sent in split_single(doc['text'])]
+    for doc in corpus:
+        sentences = [Sentence(sent, use_tokenizer = True) for sent in split_single(doc['text'])]
         corp.append(sentences)  
     return corp
 
-def get_annotations(corpus, isPrediction):
-    annotations = []
-    perPerDoc = []
-    if isPrediction:
-        for doc in corpus:
-            perCount = 0
 
-            docAnnotations = []
+
+def merge_annotations(predictedCorpus, corpus):
+    def aggregate_entities(sentensizedCorpus):
+        ents = []
+        for doc in sentensizedCorpus:
+            docEnts = []
             for sentence in doc:
-                sentenceJson = sentence.to_dict('ner')
-                for entity in sentenceJson['entities']:
-                    label = entity['labels'][0].value 
-                    if label == 'PER':
-                        print(entity['text'])
-                        perCount += 1
+                docEnts.append(sentence.to_dict('ner')['entities'])
+            ents.append(docEnts)
+        return ents
+    predictedEnts = aggregate_entities(predictedCorpus)
 
-                    docAnnotations.append((label, entity['text']))
-            annotations.append(docAnnotations) 
-            perPerDoc.append(perCount)
-        return perPerDoc
-    else:
-        for doc in corpus:
-            perCount = 0
-            docAnnotations = []
-            for entity in doc['annotations']:
-                label = entity['label'] 
-                if label.find('B-PER')!= -1:
-                    perCount += 1
-                startPos = entity['start_offset']
-                endPos = entity['end_offset']
-                docAnnotations.append((entity['label'], doc['text'][startPos:endPos].replace("\r", "").replace("\n", "")))
-            annotations.append(docAnnotations)
-            perPerDoc.append(perCount)
-        return perPerDoc[:10]
-
-
+    mergedAnnots = []
+    if len(predictedEnts) != len(corpus):
+        print("unmatching doc count; predicted docs: {}, inserted docs: {}".format(len(predictedEnts), len(corpus)))
+        exit()
+    for i in range(len(predictedEnts)):
+        mergedAnnots.append((predictedEnts[i], corpus[i]['annotations']))
+    return mergedAnnots
 
 def predict_corpus(corpus):
     '''
@@ -88,7 +75,7 @@ def predict_corpus(corpus):
     model = load_model('flair') 
     
     times = [] 
-    predicted_corpus = []
+    predictedCorpus = []
     predCount = 0
     c = 0
     for doc in corpus:
@@ -97,14 +84,15 @@ def predict_corpus(corpus):
         predCount += 1
         timeNeeded = time.time() - start
         times.append(timeNeeded)
-        predicted_corpus.append(doc)
+        predictedCorpus.append(doc)
         print(str(timeNeeded) + " Seconds nedded for predicting " + str(predCount) + ". document")
-        c += 1
-        if c == 10:
-            break
+        #c += 1
+        #if c == DOC_COUNT:
+        #    break
     print("Total doc count: " + str(predCount))
     print("Avg prediction time: " + str(sum(times)/len(times)))
-    return predicted_corpus
+    return predictedCorpus
+
 
 def substitute_names(docString, nameString):
     '''
@@ -129,7 +117,64 @@ def get_city(locString):
     returns: 'city' field of osm-overpass query
     '''
 
+def get_annotations(predictedCorpus, corpus):
+    entCount = {'predicted': {'per': 0, 'loc': 0, 'total': 0}, 'annots': {'per': 0, 'loc': 0, 'total': 0}}
     
+    annotations = []
+    perPerDoc = []
+    for doc in predictedCorpus:
+        
+        totalEntsPerDoc = 0
+        #docAnnotations = []
+        for sentence in doc:
+            sentenceJson = sentence.to_dict('ner')
+            totalEntsPerDoc += len(sentenceJson['entities'])
+            for entity in sentenceJson['entities']:
+                label = entity['labels'][0].value 
+                if label == 'PER':
+                    #print(entity['text'])
+                    entCount['predicted']['per'] += 1
+                if label == 'LOC':
+                    #print(entity['text'])
+                    entCount['predicted']['loc'] += 1
+                #docAnnotations.append((label, entity['text']))
+        entCount['predicted']['total'] += totalEntsPerDoc 
+        #annotations.append(docAnnotations) 
+        #perPerDoc.append(perCount)
+    
+    for doc in corpus:
+        perCount = 0
+        entCount['annots']['total'] += len(doc['annotations'])
+        for entity in doc['annotations']:
+            label = entity['label'] 
+                
+            if (type(label) == int and label == 20) or (type(label) == str and label[-3:] == 'PER'):
+                entCount['annots']['per'] += 1
+            if (type(label) == int and label == 23) or (type(label) == str and label[-3:] == 'LOC'):
+                entCount['annots']['loc'] += 1
+                
+            #startPos = entity['start_offset']
+            #endPos = entity['end_offset']
+            #docAnnotations.append((entity['label'], doc['text'][startPos:endPos].replace("\r", "").replace("\n", "")))
+        #annotations.append(docAnnotations)
+        #perPerDoc.append(perCount)
+    return entCount
+
+def calc_results_for_label(predCount, annotCount, label):
+    if annotCount[label] >= predCount[label]: #weniger gefunden als vorhanden
+        tp = predCount[label]
+        fp = tp * 0.15
+        fn = annotCount[label] - tp
+        tn = annotCount['total'] - annotCount[label] - fp
+    else: #mehr gefunden als vorhanden
+        tp = annotCount[label]
+        fp = tp - predCount[label]
+        fn = predCount[label] * 0.15 
+        tn = annotCount['total'] - tp - fp
+
+    #return {'precision': tp / (tp + fp), 'recall': tp / (tp + fn)}
+    return ((tp*tn) - (fp*fn)) / sqrt((tp+fp) * (tp+fn) * (tn+fp) * (tn+fn))
+
 
 def anonymize(corpus):
     '''
@@ -140,23 +185,29 @@ def anonymize(corpus):
     '''
 
     
-    corpus_text = split_sents(corpus)
-    corpus_annot = get_annotations([doc for doc in corpus['corpus']], 0)
+    corpusText = split_sents(corpus)
+    #corpus_annot = get_annotations([doc for doc in corpus], 0)
 
-    predicted_corpus = predict_corpus(corpus_text)
 
-    predicted_annot = get_annotations(predicted_corpus, 1)
+    predictedCorpus = predict_corpus(corpusText)
 
-    print(predicted_annot)
-    print(corpus_annot)
-    labelCountTuple = [(predicted_annot[i], corpus_annot[i]) for i in range(len(predicted_annot)) if corpus_annot[i]!=0 and predicted_corpus[i]!=0]
-    hasSameCount = [(lambda x, y: x == y)(tup[0] , tup[1]) for tup in labelCountTuple]
-    print(hasSameCount)
-    counter = 0
-    for i in hasSameCount:
-        if i:
-            counter += 1
-    print(counter)
+    #predicted_annot = get_annotations(predicted_corpus, 1)
+
+    #print(predicted_annot)
+    #print(corpus_annot)
+    #labelCountTuple = [(predicted_annot[i], corpus_annot[i]) for i in range(len(predicted_annot)) if corpus_annot[i]!=0 and predicted_corpus[i]!=0]
+    #hasSameCount = [(lambda x, y: x == y)(tup[0] , tup[1]) for tup in labelCountTuple]
+    #print(hasSameCount)
+    #counter = 0
+    #for i in hasSameCount:
+    #    if i:
+    #        counter += 1
+    #pprint(merge_annotations(predicted_corpus, corpus[:DOC_COUNT]))
+    #print(counter)
+    entCounts = get_annotations(predictedCorpus, corpus)
+    pprint(entCounts)
+    calcResult = calc_results_for_label(entCounts['predicted'], entCounts['annots'], 'per')
+    pprint(calcResult)
     exit()
     anonymized_docs = []
     startTime = time.time()
