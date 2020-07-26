@@ -37,28 +37,44 @@ def split_sents(corpus):
     '''
     corp = []
     for doc in corpus['corpus']:
-        sentences = [Sentence(sent, use_tokenizer = True) for sent in split_single(doc['text'])]
+        sentences = [Sentence(sent, use_tokenizer = False) for sent in split_single(doc['text'])]
         corp.append(sentences)  
-    return corp[:5]
+    return corp
 
 def get_annotations(corpus, isPrediction):
     annotations = []
+    perPerDoc = []
     if isPrediction:
         for doc in corpus:
+            perCount = 0
+
             docAnnotations = []
             for sentence in doc:
                 sentenceJson = sentence.to_dict('ner')
                 for entity in sentenceJson['entities']:
-                    docAnnotations.append((entity['labels'][0].value, entity['start_pos'], entity['end_pos']))
-            annotations.append(docAnnotations)
-        return annotations
+                    label = entity['labels'][0].value 
+                    if label == 'PER':
+                        print(entity['text'])
+                        perCount += 1
+
+                    docAnnotations.append((label, entity['text']))
+            annotations.append(docAnnotations) 
+            perPerDoc.append(perCount)
+        return perPerDoc
     else:
         for doc in corpus:
+            perCount = 0
             docAnnotations = []
             for entity in doc['annotations']:
-                docAnnotations.append((entity['label'], entity['start_offset'], entity['end_offset']))
+                label = entity['label'] 
+                if label.find('B-PER')!= -1:
+                    perCount += 1
+                startPos = entity['start_offset']
+                endPos = entity['end_offset']
+                docAnnotations.append((entity['label'], doc['text'][startPos:endPos].replace("\r", "").replace("\n", "")))
             annotations.append(docAnnotations)
-        return annotations
+            perPerDoc.append(perCount)
+        return perPerDoc[:10]
 
 
 
@@ -73,11 +89,20 @@ def predict_corpus(corpus):
     
     times = [] 
     predicted_corpus = []
+    predCount = 0
+    c = 0
     for doc in corpus:
         start = time.time()
         model.predict(doc)
-        times.append(time.time() - start)
+        predCount += 1
+        timeNeeded = time.time() - start
+        times.append(timeNeeded)
         predicted_corpus.append(doc)
+        print(str(timeNeeded) + " Seconds nedded for predicting " + str(predCount) + ". document")
+        c += 1
+        if c == 10:
+            break
+    print("Total doc count: " + str(predCount))
     print("Avg prediction time: " + str(sum(times)/len(times)))
     return predicted_corpus
 
@@ -116,14 +141,22 @@ def anonymize(corpus):
 
     
     corpus_text = split_sents(corpus)
-    corpus_annot = get_annotations([doc for doc in corpus['corpus']], 0) #start_offset in datei umbenennen
+    corpus_annot = get_annotations([doc for doc in corpus['corpus']], 0)
 
     predicted_corpus = predict_corpus(corpus_text)
 
     predicted_annot = get_annotations(predicted_corpus, 1)
 
-    pprint(predicted_annot)
-    pprint(corpus_annot)
+    print(predicted_annot)
+    print(corpus_annot)
+    labelCountTuple = [(predicted_annot[i], corpus_annot[i]) for i in range(len(predicted_annot)) if corpus_annot[i]!=0 and predicted_corpus[i]!=0]
+    hasSameCount = [(lambda x, y: x == y)(tup[0] , tup[1]) for tup in labelCountTuple]
+    print(hasSameCount)
+    counter = 0
+    for i in hasSameCount:
+        if i:
+            counter += 1
+    print(counter)
     exit()
     anonymized_docs = []
     startTime = time.time()
