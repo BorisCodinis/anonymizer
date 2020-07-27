@@ -21,7 +21,7 @@ import time
 from faker import Faker
 from OSMPythonTools.overpass import Overpass
 
-DOC_COUNT = 5
+DOC_COUNT = 100
 
 def load_model(name):
     if name == "spacy":
@@ -44,27 +44,6 @@ def split_sents(corpus):
         corp.append(sentences)  
     return corp
 
-
-
-def merge_annotations(predictedCorpus, corpus):
-    def aggregate_entities(sentensizedCorpus):
-        ents = []
-        for doc in sentensizedCorpus:
-            docEnts = []
-            for sentence in doc:
-                docEnts.append(sentence.to_dict('ner')['entities'])
-            ents.append(docEnts)
-        return ents
-    predictedEnts = aggregate_entities(predictedCorpus)
-
-    mergedAnnots = []
-    if len(predictedEnts) != len(corpus):
-        print("unmatching doc count; predicted docs: {}, inserted docs: {}".format(len(predictedEnts), len(corpus)))
-        exit()
-    for i in range(len(predictedEnts)):
-        mergedAnnots.append((predictedEnts[i], corpus[i]['annotations']))
-    return mergedAnnots
-
 def predict_corpus(corpus):
     '''
     predicts each sentence of the corpus separately
@@ -86,9 +65,9 @@ def predict_corpus(corpus):
         times.append(timeNeeded)
         predictedCorpus.append(doc)
         print(str(timeNeeded) + " Seconds nedded for predicting " + str(predCount) + ". document")
-        #c += 1
-        #if c == DOC_COUNT:
-        #    break
+        c += 1
+        if c == DOC_COUNT:
+            break
     print("Total doc count: " + str(predCount))
     print("Avg prediction time: " + str(sum(times)/len(times)))
     return predictedCorpus
@@ -117,63 +96,72 @@ def get_city(locString):
     returns: 'city' field of osm-overpass query
     '''
 
-def get_annotations(predictedCorpus, corpus):
-    entCount = {'predicted': {'per': 0, 'loc': 0, 'total': 0}, 'annots': {'per': 0, 'loc': 0, 'total': 0}}
-    
-    annotations = []
-    perPerDoc = []
+def get_entity_list(predictedCorpus, corpus):
+    entCount = 0
+    predictedPers = []
+    annotatedPers = []
+    seperator = " "
     for doc in predictedCorpus:
         
         totalEntsPerDoc = 0
-        #docAnnotations = []
         for sentence in doc:
             sentenceJson = sentence.to_dict('ner')
-            totalEntsPerDoc += len(sentenceJson['entities'])
             for entity in sentenceJson['entities']:
                 label = entity['labels'][0].value 
                 if label == 'PER':
-                    #print(entity['text'])
-                    entCount['predicted']['per'] += 1
-                if label == 'LOC':
-                    #print(entity['text'])
-                    entCount['predicted']['loc'] += 1
-                #docAnnotations.append((label, entity['text']))
-        entCount['predicted']['total'] += totalEntsPerDoc 
-        #annotations.append(docAnnotations) 
-        #perPerDoc.append(perCount)
-    
+                    predictedPers.append(entity['text'])
     for doc in corpus:
         perCount = 0
-        entCount['annots']['total'] += len(doc['annotations'])
+
+        
+
+        entCount += len(doc['annotations'])
+        tmpString = []
         for entity in doc['annotations']:
+            entText = doc['text'][entity['start_offset']:entity['end_offset']].replace('\r\n', '').replace('\n', '').strip()
             label = entity['label'] 
                 
+            if (type(label) == int and label == 20):
+                entText = re.sub(' +', ' ', entText)
+                annotatedPers.append(entText.strip())
+            if (type(label) == str and label[-3:] == 'PER'):
+                if label[0] == 'B': 
+                    if len(tmpString) == 0:
+
+                        tmpString.append(entText.strip())
+                    else: 
+                        annotatedPers.append(seperator.join(tmpString))
+                        tmpString.clear()
+                        tmpString.append(entText.strip())
+
+                else:
+                    tmpString.append(entText.strip())
+        if len(tmpString) > 0:
+            annotatedPers.append(seperator.join(tmpString))
+    return (predictedPers, annotatedPers, entCount) 
+
+def print_ents(corpus):
+    for doc in corpus:
+        for i in doc['annotations']:
+            label = i['label']
             if (type(label) == int and label == 20) or (type(label) == str and label[-3:] == 'PER'):
-                entCount['annots']['per'] += 1
-            if (type(label) == int and label == 23) or (type(label) == str and label[-3:] == 'LOC'):
-                entCount['annots']['loc'] += 1
-                
-            #startPos = entity['start_offset']
-            #endPos = entity['end_offset']
-            #docAnnotations.append((entity['label'], doc['text'][startPos:endPos].replace("\r", "").replace("\n", "")))
-        #annotations.append(docAnnotations)
-        #perPerDoc.append(perCount)
-    return entCount
+                pprint(doc['text'][i['start_offset']:i['end_offset']].replace("\r\n", "").strip())
 
-def calc_results_for_label(predCount, annotCount, label):
-    if annotCount[label] >= predCount[label]: #weniger gefunden als vorhanden
-        tp = predCount[label]
-        fp = tp * 0.15
-        fn = annotCount[label] - tp
-        tn = annotCount['total'] - annotCount[label] - fp
-    else: #mehr gefunden als vorhanden
-        tp = annotCount[label]
-        fp = tp - predCount[label]
-        fn = predCount[label] * 0.15 
-        tn = annotCount['total'] - tp - fp
-
-    #return {'precision': tp / (tp + fp), 'recall': tp / (tp + fn)}
-    return ((tp*tn) - (fp*fn)) / sqrt((tp+fp) * (tp+fn) * (tn+fp) * (tn+fn))
+def calc_results_for_label(predEnts, annotEnts, entCount,label = 'per'):
+    tp = 0
+    fp = 0
+    tn = 0
+    fn = 0
+    totalPerCount = len(annotEnts)
+    for i in predEnts:
+        if i in annotEnts:
+            annotEnts.remove(i)
+            tp += 1
+        else:
+            fp += 1
+    fn = len(annotEnts)
+    tn = entCount - totalPerCount - fp
+    return {'precision': tp / (tp + fp), 'recall': tp / (tp + fn)}
 
 
 def anonymize(corpus):
@@ -184,29 +172,10 @@ def anonymize(corpus):
     returns list of anonymized documents
     '''
 
-    
     corpusText = split_sents(corpus)
-    #corpus_annot = get_annotations([doc for doc in corpus], 0)
-
-
     predictedCorpus = predict_corpus(corpusText)
-
-    #predicted_annot = get_annotations(predicted_corpus, 1)
-
-    #print(predicted_annot)
-    #print(corpus_annot)
-    #labelCountTuple = [(predicted_annot[i], corpus_annot[i]) for i in range(len(predicted_annot)) if corpus_annot[i]!=0 and predicted_corpus[i]!=0]
-    #hasSameCount = [(lambda x, y: x == y)(tup[0] , tup[1]) for tup in labelCountTuple]
-    #print(hasSameCount)
-    #counter = 0
-    #for i in hasSameCount:
-    #    if i:
-    #        counter += 1
-    #pprint(merge_annotations(predicted_corpus, corpus[:DOC_COUNT]))
-    #print(counter)
-    entCounts = get_annotations(predictedCorpus, corpus)
-    pprint(entCounts)
-    calcResult = calc_results_for_label(entCounts['predicted'], entCounts['annots'], 'per')
+    entities = get_entity_list(predictedCorpus, corpus[:DOC_COUNT])
+    calcResult = calc_results_for_label(entities[0], entities[1], entities[2])
     pprint(calcResult)
     exit()
     anonymized_docs = []
