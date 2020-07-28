@@ -1,34 +1,22 @@
-#import numpy as np
 import json
-from math import sqrt
-#import sys
-#from flair.embeddings import TokenEmbeddings, WordEmbeddings, StackedEmbeddings, PooledFlairEmbeddings
-from flair.models import SequenceTagger
+from math import sqrt, pi, exp
 from flair.data import Sentence
+from flair.models import SequenceTagger
 from segtok.segmenter import split_single
-#from sklearn.metrics import f1_score
 from pprint import pprint
-#import spacy
-#from spacy.gold import GoldParse
-#from spacy.scorer import Scorer
 import re
-#from spacy.lang.de import German
-#import torch
-#import flashtext
 import time
-#from transformers import AutoTokenizer, BertModel, AutoModelWithLMHead, \
-#   BertForTokenClassification, AutoModelForTokenClassification, AutoConfig
 from faker import Faker
 from OSMPythonTools.overpass import Overpass
 
-DOC_COUNT = 100
+DOC_COUNT = 200
 
 def load_model(name):
     if name == "spacy":
         return spacy.load("/content/drive/My Drive/Colab Notebooks/models/spacy")
         
     elif name == "flair":
-        return SequenceTagger.load('models/de-ner-conll03-v0.4.pt')
+        return SequenceTagger.load('models/multi-ner.pt')
 
     return 1
 	
@@ -89,56 +77,91 @@ def substitute_names(docString, nameString):
         docString = re.subn(name, faker.first_name(), docString)[0] 
     return docString
 
-def get_city(locString):
-    '''
-    tries to get the city the locString is located in with openStreetMap API
-    locString: string of location found by NER-Tagger
-    returns: 'city' field of osm-overpass query
-    '''
+def create_distribution(prec, entsPerDoc):
+    def prop_for(k):   
+        expect = prec * entsPerDoc
+        var = prec * entsPerDoc * (1-prec)
+        k1 = pow(k - expect, 2)
+        k2 = -k1/2 * pow(var, 2)
+        return (1./(sqrt(2. * pi) * var)) * exp(k2)
+
+    return prop_for
+
 
 def get_entity_list(predictedCorpus, corpus):
-    entCount = 0
+    perCount = 0
+    locCount = 0
     predictedPers = []
+    predictedLocs = []
     annotatedPers = []
+    annotatedLocs = []
     seperator = " "
-    for doc in predictedCorpus:
-        
-        totalEntsPerDoc = 0
-        for sentence in doc:
+
+    for doc in predictedCorpus: 
+        for sentence in doc: #one document has multiple Sentence objects,
             sentenceJson = sentence.to_dict('ner')
             for entity in sentenceJson['entities']:
                 label = entity['labels'][0].value 
                 if label == 'PER':
                     predictedPers.append(entity['text'])
-    for doc in corpus:
-        perCount = 0
+                elif label == 'LOC':
+                    predictedLocs.append(entity['text'])
+    
+    for doc in corpus: # Iterate over annotated corpus
+        tmpPerString = []
+        tmpLocString = []
 
-        
-
-        entCount += len(doc['annotations'])
-        tmpString = []
         for entity in doc['annotations']:
-            entText = doc['text'][entity['start_offset']:entity['end_offset']].replace('\r\n', '').replace('\n', '').strip()
+            entText = doc['text'][entity['start_offset']:entity['end_offset']] \
+                .replace('\r\n', '').replace('\n', '').strip()
             label = entity['label'] 
                 
             if (type(label) == int and label == 20):
                 entText = re.sub(' +', ' ', entText)
                 annotatedPers.append(entText.strip())
+                perCount += 1
+
             if (type(label) == str and label[-3:] == 'PER'):
                 if label[0] == 'B': 
-                    if len(tmpString) == 0:
-
-                        tmpString.append(entText.strip())
+                    perCount += 1
+                    if len(tmpPerString) == 0:
+                        tmpPerString.append(entText.strip())
+                    
                     else: 
-                        annotatedPers.append(seperator.join(tmpString))
-                        tmpString.clear()
-                        tmpString.append(entText.strip())
-
+                        annotatedPers.append(seperator.join(tmpPerString))
+                        tmpPerString.clear()
+                        tmpPerString.append(entText.strip())
                 else:
-                    tmpString.append(entText.strip())
-        if len(tmpString) > 0:
-            annotatedPers.append(seperator.join(tmpString))
-    return (predictedPers, annotatedPers, entCount) 
+                    tmpPerString.append(entText.strip())
+
+
+
+
+            if (type(label) == int and label == 23):
+                entText = re.sub(' +', ' ', entText)
+                annotatedLocs.append(entText.strip())
+                locCount += 1
+
+            if (type(label) == str and label[-3:] == 'LOC'):
+                if label[0] == 'B': 
+                    locCount += 1
+                    if len(tmpLocString) == 0:
+                        tmpLocString.append(entText.strip())
+                    
+                    else: 
+                        annotatedLocs.append(seperator.join(tmpLocString))
+                        tmpLocString.clear()
+                        tmpLocString.append(entText.strip())
+                else:
+                    tmpLocString.append(entText.strip())
+
+        if len(tmpLocString) > 0:
+            annotatedLocs.append(seperator.join(tmpLocString))
+
+
+
+    
+    return {'per': (predictedPers, annotatedPers, perCount/len(corpus)), 'loc': (predictedLocs, annotatedLocs, locCount/len(corpus))}
 
 def print_ents(corpus):
     for doc in corpus:
@@ -147,10 +170,10 @@ def print_ents(corpus):
             if (type(label) == int and label == 20) or (type(label) == str and label[-3:] == 'PER'):
                 pprint(doc['text'][i['start_offset']:i['end_offset']].replace("\r\n", "").strip())
 
-def calc_results_for_label(predEnts, annotEnts, entCount,label = 'per'):
+def calc_results_for_label(predEnts, annotEnts, entsPerDoc, label = 'per'):
     tp = 0
     fp = 0
-    tn = 0
+    #tn = 0
     fn = 0
     totalPerCount = len(annotEnts)
     for i in predEnts:
@@ -160,8 +183,8 @@ def calc_results_for_label(predEnts, annotEnts, entCount,label = 'per'):
         else:
             fp += 1
     fn = len(annotEnts)
-    tn = entCount - totalPerCount - fp
-    return {'precision': tp / (tp + fp), 'recall': tp / (tp + fn)}
+    #tn = entCount - totalPerCount - fp
+    return {'precision': tp / (tp + fp), 'recall': tp / (tp + fn), 'ppd': entsPerDoc}
 
 
 def anonymize(corpus):
@@ -175,12 +198,18 @@ def anonymize(corpus):
     corpusText = split_sents(corpus)
     predictedCorpus = predict_corpus(corpusText)
     entities = get_entity_list(predictedCorpus, corpus[:DOC_COUNT])
-    calcResult = calc_results_for_label(entities[0], entities[1], entities[2])
-    pprint(calcResult)
+    perResult = calc_results_for_label(entities['per'][0], entities['per'][1], entities['per'][2])
+    locResult = calc_results_for_label(entities['loc'][0], entities['loc'][1], entities['loc'][2])
+    pprint(perResult)
+    pprint(locResult)
+    calculator = create_distribution(perResult['recall'], perResult['ppd'])
+
+    pprint((locResult['ppd']*locResult['recall']) + (perResult['ppd']*perResult['recall']))
+    print(calculator(0))
     exit()
     anonymized_docs = []
     startTime = time.time()
-    for doc in predicted_corpus:
+    for doc in predictedCorpus:
                
         
         entsWithLabel = []
@@ -202,5 +231,5 @@ def anonymize(corpus):
             #    location = entity[1]
             #    get_city()
         anonymized_docs.append(docString)
-        pprint(anonymized_docs)
+    pprint(anonymized_docs)
     print('time needed for loop hell: ' + str(time.time() - startTime))
